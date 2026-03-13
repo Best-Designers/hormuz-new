@@ -3001,21 +3001,14 @@ var CURRENT_SUPPLY_METRICS = {
   saudiRerouteShips72h: 0,
 };
 
-
 function getAverageBarrelCostNow() {
   var wti = lastHLPrices['xyz:CL'] || null;
   var brent = lastHLPrices['xyz:BRENTOIL'] || null;
   var fallbackBrent = CL_FAIR_VALUE_MODEL.precrisisAvg + CL_FAIR_VALUE_MODEL.brentSpread;
-  if (wti && brent) return { value: (wti + brent) / 2, basis: 'WTI + Brent live midpoint', realtime: true };
-  if (wti) return { value: (wti + fallbackBrent) / 2, basis: 'WTI live + Brent spread fallback', realtime: false };
-  if (brent) return { value: (brent + (brent - CL_FAIR_VALUE_MODEL.brentSpread)) / 2, basis: 'Brent live + WTI spread fallback', realtime: false };
-  return { value: CL_FAIR_VALUE_MODEL.precrisisAvg + (CL_FAIR_VALUE_MODEL.brentSpread / 2), basis: 'Model fallback (no live feed)', realtime: false };
-}
-
-function utcNowLabel() {
-  var d = new Date();
-  var pad = function(n) { return String(n).padStart(2, '0'); };
-  return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + ' UTC';
+  if (wti && brent) return { value: (wti + brent) / 2, basis: 'WTI + Brent live midpoint' };
+  if (wti) return { value: (wti + fallbackBrent) / 2, basis: 'WTI live + Brent spread fallback' };
+  if (brent) return { value: (brent + (brent - CL_FAIR_VALUE_MODEL.brentSpread)) / 2, basis: 'Brent live + WTI spread fallback' };
+  return { value: CL_FAIR_VALUE_MODEL.precrisisAvg + (CL_FAIR_VALUE_MODEL.brentSpread / 2), basis: 'Model fallback (no live feed)' };
 }
 
 function updateSaudiRerouteStats() {
@@ -3037,7 +3030,7 @@ function updateSaudiRerouteStats() {
     var base = SUPPLY_DISRUPTIONS.saudiRedSeaReroute.baselineShips72h;
     var deltaPct = base > 0 ? ((rerouteCount - base) / base) * 100 : 0;
     var prefix = deltaPct > 0 ? '+' : '';
-    elChange.textContent = prefix + deltaPct.toFixed(0) + '% vs baseline ' + base + ' ships/72h · OSINT near-real-time · ' + utcNowLabel();
+    elChange.textContent = prefix + deltaPct.toFixed(0) + '% vs baseline ' + base + ' ships/72h';
     elChange.className = 'stat-change ' + (deltaPct > 0 ? 'up' : deltaPct < 0 ? 'down' : 'neutral');
   }
 }
@@ -3047,7 +3040,7 @@ function updateAverageBarrelCostStat() {
   var valEl = document.getElementById('avg-barrel-cost');
   if (valEl) valEl.textContent = '$' + avg.value.toFixed(2);
   var basisEl = document.getElementById('avg-barrel-cost-basis');
-  if (basisEl) basisEl.textContent = (avg.realtime ? 'LIVE' : 'EST') + ' · ' + avg.basis + ' · ' + utcNowLabel();
+  if (basisEl) basisEl.textContent = avg.basis;
 }
 
 function renderSupplyDisruptions() {
