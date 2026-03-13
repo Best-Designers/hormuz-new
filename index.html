@@ -1106,7 +1106,7 @@
   </div>
 
   <!-- STATS ROW — non-price indicators only (prices handled by TradingView above) -->
-  <div class="stats-row" style="grid-template-columns: repeat(4, 1fr);">
+  <div class="stats-row" style="grid-template-columns: repeat(6, 1fr);">
     <div class="stat-box">
       <div class="stat-label">Vessels in Transit</div>
       <div class="stat-value red" id="vessel-count">4</div>
@@ -1118,6 +1118,11 @@
       <div class="stat-change neutral">est. transponders off</div>
     </div>
     <div class="stat-box">
+      <div class="stat-label">Saudi Red Sea Reroutes (72h)</div>
+      <div class="stat-value orange" id="saudi-reroute-count">0</div>
+      <div class="stat-change neutral" id="saudi-reroute-change">Monitoring diversion flow</div>
+    </div>
+    <div class="stat-box">
       <div class="stat-label">Sentiment Score</div>
       <div class="stat-value red" id="sentiment-num">18</div>
       <div class="stat-change down">EXTREME FEAR</div>
@@ -1126,6 +1131,11 @@
       <div class="stat-label">Narrative Gap</div>
       <div class="stat-value orange" id="gap-score">HIGH</div>
       <div class="stat-change down">Gov vs Ground diverge</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Avg Barrel Cost (Now)</div>
+      <div class="stat-value green" id="avg-barrel-cost">$--.--</div>
+      <div class="stat-change neutral" id="avg-barrel-cost-basis">WTI/Brent midpoint</div>
     </div>
   </div>
 
@@ -1810,6 +1820,7 @@ function buildTransitAttemptFromText(text, ts, sourceLabel) {
    id: (clean.substring(0, 90) + '|' + String(ts || 0)).toLowerCase(),
     time: toUtcString(ts),
     ts: ts || Math.floor(Date.now() / 1000),
+    routeText: clean,
     vessel: vesselName || ((sourceLabel || 'OSINT') + ' maritime report'),
     type: type,
     flag: flagMeta.flag,
@@ -1841,6 +1852,7 @@ function mergeTransitAttempts(newsItems) {
 
   renderTransitLog();
   updateTransitChartFromRealAttempts();
+  updateSaudiRerouteStats();
 }
 
 function mergeAttemptsIntoHistory(attempts) {
@@ -1968,6 +1980,7 @@ async function fetchMapVesselSnapshot() {
         id: 'map-live-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         time: toUtcString(nowSec - (idx * 600)),
         ts: nowSec - (idx * 600),
+        routeText: statusParts.join(' • '),
         vessel: name,
         type: (record && record.type) || profile.type || 'Commercial',
         flag: profile.flag || 'Unknown',
@@ -2093,6 +2106,7 @@ var sourceName = article.domain || article.sourcecountry || 'GDELT';
       mergeAttemptsIntoHistory(mapped);
       renderTransitLog();
       updateTransitChartFromRealAttempts();
+      updateSaudiRerouteStats();
     }
   } catch(e) {
     console.warn('[TRANSIT] Real transit feed failed:', e.message);
@@ -2137,6 +2151,7 @@ function backfillTransitAttemptsFromMap() {
         id: id,
         time: toUtcString(ts),
         ts: ts,
+        routeText: statusParts.join(' • '),
         vessel: name,
         type: profile.type || 'Commercial',
         flag: profile.flag || 'Unknown',
@@ -2180,6 +2195,7 @@ function renderTransitLog() {
 }
 
 try { renderTransitLog(); } catch(e) { console.warn('Transit log render error:', e.message); }
+try { updateSaudiRerouteStats(); } catch(e) { console.warn('Saudi reroute stat error:', e.message); }
 
 // =====================
 // OSINT SOURCES
@@ -2914,6 +2930,7 @@ async function fetchHyperliquidOil() {
     // Update impact matrix + fair value with fresh prices
     try { renderHormuzImpact(); } catch(ex) { console.warn('[HL] Impact render error:', ex.message); }
     try { renderFairValue(); } catch(ex) { console.warn('[HL] Fair value render error:', ex.message); }
+    try { updateAverageBarrelCostStat(); } catch(ex) { console.warn('[HL] Avg barrel stat error:', ex.message); }
   } catch(e) {
     console.warn('[HL] Hyperliquid fetch error:', e.message);
     const grid = document.getElementById('hl-oil-grid');
@@ -2966,8 +2983,65 @@ const SUPPLY_DISRUPTIONS = {
     detail: '32 IEA nations releasing 400M barrels — US contributing 172M from SPR (415M remaining of 715M capacity)',
     startDate: '2026-03-18',
     durationDays: 120,
+  },
+  saudiRedSeaReroute: {
+    label: 'Saudi rerouting via Red Sea corridor',
+    baselineShips72h: 12,
+    constrainedMbpd: 0.9,
+    corridor: 'East-West pipeline + Yanbu/Red Sea loading lane',
+    detail: 'Rerouted Saudi barrels avoid Hormuz but still face Red Sea Strait insurance + queue constraints'
   }
 };
+
+var CURRENT_SUPPLY_METRICS = {
+  totalOffline: 10.9,
+  netDeficit: 9.5,
+  globalSupply: 102.0,
+  saudiRerouteLossMbpd: 0.9,
+  saudiRerouteShips72h: 0,
+};
+
+function getAverageBarrelCostNow() {
+  var wti = lastHLPrices['xyz:CL'] || null;
+  var brent = lastHLPrices['xyz:BRENTOIL'] || null;
+  var fallbackBrent = CL_FAIR_VALUE_MODEL.precrisisAvg + CL_FAIR_VALUE_MODEL.brentSpread;
+  if (wti && brent) return { value: (wti + brent) / 2, basis: 'WTI + Brent live midpoint' };
+  if (wti) return { value: (wti + fallbackBrent) / 2, basis: 'WTI live + Brent spread fallback' };
+  if (brent) return { value: (brent + (brent - CL_FAIR_VALUE_MODEL.brentSpread)) / 2, basis: 'Brent live + WTI spread fallback' };
+  return { value: CL_FAIR_VALUE_MODEL.precrisisAvg + (CL_FAIR_VALUE_MODEL.brentSpread / 2), basis: 'Model fallback (no live feed)' };
+}
+
+function updateSaudiRerouteStats() {
+  var cutoff = Math.floor(Date.now() / 1000) - (72 * 60 * 60);
+  var rerouteKeywords = /(saudi|yanbu|red\s*sea|bab\s*el\s*mandeb|east-?west\s*pipeline|sumed|jeddah)/i;
+  var reroutes = transitAttemptHistory.filter(function(t) {
+    if (!t || t.ts < cutoff) return false;
+    var text = [t.status, t.vessel, t.routeText, t.dir].filter(Boolean).join(' ').toLowerCase();
+    return /divert|rerout/.test(text) && rerouteKeywords.test(text);
+  });
+
+  var rerouteCount = reroutes.length;
+  CURRENT_SUPPLY_METRICS.saudiRerouteShips72h = rerouteCount;
+
+  var elCount = document.getElementById('saudi-reroute-count');
+  if (elCount) elCount.textContent = String(rerouteCount);
+  var elChange = document.getElementById('saudi-reroute-change');
+  if (elChange) {
+    var base = SUPPLY_DISRUPTIONS.saudiRedSeaReroute.baselineShips72h;
+    var deltaPct = base > 0 ? ((rerouteCount - base) / base) * 100 : 0;
+    var prefix = deltaPct > 0 ? '+' : '';
+    elChange.textContent = prefix + deltaPct.toFixed(0) + '% vs baseline ' + base + ' ships/72h';
+    elChange.className = 'stat-change ' + (deltaPct > 0 ? 'up' : deltaPct < 0 ? 'down' : 'neutral');
+  }
+}
+
+function updateAverageBarrelCostStat() {
+  var avg = getAverageBarrelCostNow();
+  var valEl = document.getElementById('avg-barrel-cost');
+  if (valEl) valEl.textContent = '$' + avg.value.toFixed(2);
+  var basisEl = document.getElementById('avg-barrel-cost-basis');
+  if (basisEl) basisEl.textContent = avg.basis;
+}
 
 function renderSupplyDisruptions() {
   // Headline total
@@ -2977,15 +3051,24 @@ function renderSupplyDisruptions() {
   const iranDirect = 3.2;
   // Avoid double-counting: Hormuz blocks transit (20M), but production cuts (6.7M) and refinery damage (1.8M) overlap with Hormuz
   // True offline = Hormuz transit (20M) + Iran destroyed capacity not in transit (already counted) + extra cuts on top
-  // IEA says ~8M bpd crude shut-in + 2M condensates = 10M bpd net offline
-  const totalOffline = 10.0;
+  // IEA says ~8M bpd crude shut-in + 2M condensates = 10M bpd base offline.
+  // Add Saudi reroute chokepoint losses through Red Sea corridor.
+  const baseOffline = 10.0;
+  const saudiRerouteLoss = SUPPLY_DISRUPTIONS.saudiRedSeaReroute.constrainedMbpd;
+  const totalOffline = baseOffline + saudiRerouteLoss;
   const globalSupply = 102.0;
   const pctGlobal = ((totalOffline / globalSupply) * 100).toFixed(1);
+  const netDeficit = totalOffline - SUPPLY_DISRUPTIONS.sprRelease.dailyRate;
+
+  CURRENT_SUPPLY_METRICS.totalOffline = totalOffline;
+  CURRENT_SUPPLY_METRICS.netDeficit = netDeficit;
+  CURRENT_SUPPLY_METRICS.globalSupply = globalSupply;
+  CURRENT_SUPPLY_METRICS.saudiRerouteLossMbpd = saudiRerouteLoss;
 
   var el = document.getElementById('supply-total-mbpd');
   if (el) el.textContent = '~' + totalOffline.toFixed(1);
   var pctEl = document.getElementById('supply-pct-global');
-  if (pctEl) pctEl.textContent = '~' + pctGlobal + '% of global ' + globalSupply + 'M bpd supply — largest disruption in history (IEA)';
+  if (pctEl) pctEl.textContent = '~' + pctGlobal + '% of global ' + globalSupply + 'M bpd supply — includes Saudi Red Sea reroute constraints';
 
   // Disruption categories
   var catGrid = document.getElementById('supply-disruption-grid');
@@ -2993,10 +3076,11 @@ function renderSupplyDisruptions() {
     var cats = [
       { icon: '🚢', label: 'Hormuz Transit Halt', value: '~0 tankers/day', sub: 'Down from ~60/day normal', color: 'var(--accent-red)', bg: 'rgba(239,68,68,0.12)' },
       { icon: '🏭', label: 'Gulf Production Cuts', value: '−6.7M bpd', sub: 'SA, Iraq, Kuwait, UAE — tanks full', color: 'var(--accent-orange)', bg: 'rgba(245,158,11,0.12)' },
+      { icon: '🛣️', label: 'Saudi Red Sea Reroute Loss', value: '−' + saudiRerouteLoss.toFixed(1) + 'M bpd', sub: SUPPLY_DISRUPTIONS.saudiRedSeaReroute.corridor, color: 'var(--accent-orange)', bg: 'rgba(245,158,11,0.12)' },
       { icon: '💥', label: 'Refinery/Infra Damage', value: '~1.8M bpd', sub: 'Bapco, Ras Tanura, Ruwais, Iran', color: 'var(--accent-red)', bg: 'rgba(239,68,68,0.12)' },
       { icon: '⚠️', label: 'Force Majeure Declared', value: '4 nations', sub: 'Bahrain, Qatar, Iraq, Kuwait', color: 'var(--accent-orange)', bg: 'rgba(245,158,11,0.12)' },
       { icon: '🛢️', label: 'IEA SPR Release', value: '400M bbls', sub: '32 nations — US: 172M of 415M in SPR', color: 'var(--accent-green)', bg: 'rgba(34,197,94,0.12)' },
-      { icon: '📈', label: 'Net Supply Deficit', value: '~8.6M bpd', sub: 'After SPR release of ~1.4M bpd', color: 'var(--accent-red)', bg: 'rgba(239,68,68,0.12)' },
+      { icon: '📈', label: 'Net Supply Deficit', value: '~' + netDeficit.toFixed(1) + 'M bpd', sub: 'After SPR release of ~1.4M bpd', color: 'var(--accent-red)', bg: 'rgba(239,68,68,0.12)' },
     ];
     catGrid.innerHTML = cats.map(function(c) {
       return '<div style="background: ' + c.bg + '; border: 1px solid ' + c.color + '33; border-radius: 8px; padding: 12px;">' +
@@ -3108,9 +3192,11 @@ function renderFairValue() {
   var livePrice = lastHLPrices['xyz:CL'] || null;
   var liveBrent = lastHLPrices['xyz:BRENTOIL'] || null;
 
-  // Calculate net deficit after SPR
-  var netDeficit = m.offlineMbpd - m.sprOffsetMbpd;
+  // Calculate net deficit after SPR (sync with disruption tracker including Saudi Red Sea reroute loss)
+  var liveOfflineMbpd = (CURRENT_SUPPLY_METRICS && CURRENT_SUPPLY_METRICS.totalOffline) || m.offlineMbpd;
+  var netDeficit = (CURRENT_SUPPLY_METRICS && CURRENT_SUPPLY_METRICS.netDeficit) || (liveOfflineMbpd - m.sprOffsetMbpd);
   var pctDeficit = (netDeficit / m.globalSupply) * 100;
+  var avgBarrel = getAverageBarrelCostNow();
 
   // Elasticity-based fair value: %ΔP = %ΔQ / elasticity
   var pctSupplyShock = -(netDeficit / m.globalSupply);
@@ -3164,13 +3250,14 @@ function renderFairValue() {
 
   // === MODEL BREAKDOWN ===
   html += '<div style="font-size: 11px; font-weight: 700; color: var(--text-secondary); letter-spacing: 1px; margin-bottom: 8px; text-transform: uppercase;">Fair Value Model Breakdown</div>';
-  html += '<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px;">';
+  html += '<div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 14px;">';
 
   var modelSteps = [
     { label: 'Supply Deficit', value: '−' + netDeficit.toFixed(1) + 'M bpd', sub: pctDeficit.toFixed(1) + '% of global supply', icon: '📉', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)' },
+    { label: 'Saudi Red Sea Constraint', value: '−' + (((CURRENT_SUPPLY_METRICS && CURRENT_SUPPLY_METRICS.saudiRerouteLossMbpd) || 0).toFixed(1)) + 'M bpd', sub: 'Rerouted exports via Red Sea strait', icon: '🇸🇦', bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)' },
     { label: 'Elasticity (Short-run)', value: m.elasticityShortRun.toFixed(2), sub: 'Implies +' + (pctPriceChange_short * 100).toFixed(0) + '% price shock', icon: '📊', bg: 'rgba(99,102,241,0.1)', border: 'rgba(99,102,241,0.3)' },
     { label: 'Elasticity Price', value: '$' + fairValue_short.toFixed(0), sub: 'Before geo premium', icon: '🧮', bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)' },
-    { label: 'Geo/War Premium', value: '+$' + m.geoPremium, sub: 'Active conflict risk', icon: '⚔️', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)' },
+    { label: 'Avg Barrel Cost (Now)', value: '$' + avgBarrel.value.toFixed(2), sub: avgBarrel.basis, icon: '🛢️', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.3)' },
   ];
 
   modelSteps.forEach(function(s) {
@@ -3470,6 +3557,7 @@ async function fetchPriceTicker() {
     // Immediately re-render fair value + impact with fresh prices
     try { renderFairValue(); } catch(e) {}
     try { renderHormuzImpact(); } catch(e) {}
+    try { updateAverageBarrelCostStat(); } catch(e) {}
     console.log('[TICKER-PRICE] Price ticker loaded:', items.length, 'symbols, CL=$' + (lastHLPrices['xyz:CL'] || 'N/A'));
   } catch(e) {
     console.warn('[TICKER-PRICE] Error:', e.message);
@@ -4072,6 +4160,8 @@ async function refreshAll() {
     // Update impact matrix after all prices loaded
     try { renderHormuzImpact(); } catch(e) { console.warn('[REFRESH] Impact render:', e.message); }
     try { renderFairValue(); } catch(e) { console.warn('[REFRESH] Fair value render:', e.message); }
+    try { updateAverageBarrelCostStat(); } catch(e) { console.warn('[REFRESH] Avg barrel stat:', e.message); }
+    try { updateSaudiRerouteStats(); } catch(e) { console.warn('[REFRESH] Saudi reroute stat:', e.message); }
   } catch(e) {
     console.error('Refresh error:', e);
   }
@@ -4097,6 +4187,7 @@ async function refreshPricesOnly() {
     await Promise.allSettled([fetchPriceTicker(), fetchHyperliquidOil(), fetchWhalePositions(), fetchExtraCommodities()]);
     try { renderFairValue(); } catch(e) {}
     try { renderSupplyDisruptions(); } catch(e) {}
+    try { updateAverageBarrelCostStat(); } catch(e) {}
   } catch(e) { console.warn('[FAST] Price refresh error:', e.message); }
 }
 
